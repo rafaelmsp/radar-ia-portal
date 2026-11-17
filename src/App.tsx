@@ -1,283 +1,187 @@
-import {useEffect,useMemo,useState} from 'react';
-import {type User} from '@supabase/supabase-js';
-import {Radar,Search,Scale,Newspaper,ShieldCheck,BookOpen,Mail,Bell,LogIn,LogOut,Bookmark,
-  House,ChevronRight,ExternalLink,Send,Check,Smartphone,Users,
-  TrendingUp,Eye,Settings,RefreshCw,Lightbulb,Archive,AlertTriangle, X,Info, CalendarDays} from 'lucide-react';
-import {db,type Article,type Source,type Announcement,briefDate,isEditor,externalHttps} from './lib';
+import {lazy,Suspense,useEffect,useMemo,useState} from 'react';
+import type {User} from '@supabase/supabase-js';
+import {ArrowRight,ArrowUpRight,Bell,Bookmark,BookOpen,CheckCircle2,ChevronRight,
+ Clock3,Compass,FileCheck2,FileText,House,Info,Lightbulb,
+ LogIn,Menu,Newspaper,Radar,RefreshCw,Scale,Search,ShieldCheck,Sparkles,
+ Users,X} from 'lucide-react';
+import {db,type Article,type Announcement,type Source,briefDate,externalHttps,isEditor} from './lib';
+import type {PracticeTab} from './Practice';
+const Practice=lazy(()=>import('./Practice'));
+const MyArea=lazy(()=>import('./MyArea'));
+const AdminPanel=lazy(()=>import('./AdminPanel'));
 
-type View='inicio'|'noticias'|'legislacao'|'jurisprudencia'|'informes'|'minha-area'|'admin';
-type Mode='essencial'|'avancado';
-type CollectorRun={source_slug:string;status:string;examined:number;inserted:number;started_at:string;error_message:string|null};
-type EditorialEvent={id:number;entity_type:string;action:string;previous_status:string|null;new_status:string;occurred_at:string};
-type InstallEvent=Event&{prompt:()=>Promise<void>;userChoice?:Promise<{outcome:string}>};
-const nav:[View,string,typeof Radar][]=[
-  ['inicio','Início',House],['noticias','Novidades',Newspaper],
-  ['legislacao','Legislação',Scale],['jurisprudencia','Jurisprudência',BookOpen],
-  ['informes','Comissão',Mail],['minha-area','Minha área',Bookmark]
+type View='inicio'|'atualizacoes'|'pratica'|'informes'|'minha-area'|'admin';
+type ReadingMode='essencial'|'avancado';
+type InstallEvent=Event&{prompt:()=>Promise<void>};
+const navigation:{view:View;label:string}[]=[
+ {view:'inicio',label:'Início'},{view:'atualizacoes',label:'Atualizações'},
+ {view:'pratica',label:'IA na prática'},{view:'informes',label:'Comissão'}
 ];
-function safeDate(when:string|null){return briefDate(when)}
-function Summary({text}:{text:string}){return <p className="summary">{text||'Consulte a publicação original para conhecer os detalhes e seu contexto jurídico.'}</p>}
+function niceDate(s:string|null){return s?briefDate(s):'Sem data informada'}
+function getCategoryIcon(kind:string){
+ return kind==='Legislação'?<Scale size={17}/>:kind==='Jurisprudência'?<BookOpen size={17}/>:<Newspaper size={17}/>;
+}
+function ArticleCard({item,source,favorite,onSave,mode,index=0}:{item:Article;source:string;favorite:boolean;onSave:(id:string)=>void;mode:ReadingMode;index?:number}){
+ const link=externalHttps(item.url);
+ return <article className="article-card">
+   <div className="article-number">{String(index+1).padStart(2,'0')}</div>
+   <div className="article-main">
+     <div className="article-meta"><span className="article-type">{getCategoryIcon(item.kind)} {item.kind}</span><span className="meta-divider"/><span>{source}</span><span className="meta-divider"/><span>{niceDate(item.published_at||item.discovered_at)}</span></div>
+     <h3>{item.title}</h3><p>{item.excerpt||'Confira a publicação original para conhecer o contexto e os detalhes.'}</p>
+     {item.editorial_note&&<div className="impact-note"><Lightbulb size={18}/><div><strong>Por que vale sua atenção</strong><span>{item.editorial_note}</span></div></div>}
+     {mode==='avancado'&&<p className="article-tech">Relevância temática estimada: {item.relevance_score}/100. Esta classificação não substitui análise jurídica.</p>}
+     <div className="article-actions"><a className="text-cta" href={link||'#'} target="_blank" rel="noopener noreferrer">Ler publicação original <ArrowUpRight size={17}/></a><button className={'save-button '+(favorite?'selected':'')} onClick={()=>onSave(item.id)} aria-label={favorite?'Remover dos favoritos':'Salvar nos favoritos'} aria-pressed={favorite}><Bookmark size={18} fill={favorite?'currentColor':'none'}/><span>{favorite?'Salvo':'Salvar'}</span></button></div>
+   </div>
+ </article>;
+}
 
 export default function App(){
-  const [view,setView]=useState<View>('inicio');
-  const [mode,setMode]=useState<Mode>('essencial');
-  const [articles,setArticles]=useState<Article[]>([]);
-  const [sources,setSources]=useState<Source[]>([]);
-  const [announcements,setAnnouncements]=useState<Announcement[]>([]);
-  const [drafts,setDrafts]=useState<Article[]>([]);
-  const [user,setUser]=useState<User|null>(null);
-  const [bookmarks,setBookmarks]=useState<string[]>([]);
-  const [readIds,setReadIds]=useState<string[]>([]);
-  const [search,setSearch]=useState('');
-  const [filter,setFilter]=useState('Todos');
-  const [email,setEmail]=useState('');
-  const [displayName,setDisplayName]=useState('');
-  const [area,setArea]=useState('');
-  const [topics,setTopics]=useState<string[]>([]);
-  const [info,setInfo]=useState('');
-  const [loading,setLoading]=useState(true);
-  const [sending,setSending]=useState(false);
-  const [install,setInstall]=useState<InstallEvent|null>(null);
-  const [iphoneGuide,setIphoneGuide]=useState(false);
-  const [adminTitle,setAdminTitle]=useState('');
-  const [adminBody,setAdminBody]=useState('');
-  const [adminKind,setAdminKind]=useState('informe');
-  const [adminAudience,setAdminAudience]=useState('all');
-  const [suggestion,setSuggestion]=useState('');
-  const [suggestionTopic,setSuggestionTopic]=useState('Capacitação');
-  const [reviewNotes,setReviewNotes]=useState<Record<string,string>>({});
-  const [reviewingId,setReviewingId]=useState<string|null>(null);
-  const [runs,setRuns]=useState<CollectorRun[]>([]);
-  const [audit,setAudit]=useState<EditorialEvent[]>([]);
-  const role=user?.app_metadata?.radar_role as string|undefined;
-  const editorial=isEditor(role);
+ const [view,setView]=useState<View>('inicio');
+ const [mode,setMode]=useState<ReadingMode>('essencial');
+ const [practiceTab,setPracticeTab]=useState<PracticeTab>('guias');
+ const [articles,setArticles]=useState<Article[]>([]);
+ const [sources,setSources]=useState<Source[]>([]);
+ const [announcements,setAnnouncements]=useState<Announcement[]>([]);
+ const [bookmarks,setBookmarks]=useState<string[]>([]);
+ const [reads,setReads]=useState<string[]>([]);
+ const [user,setUser]=useState<User|null>(null);
+ const [search,setSearch]=useState('');
+ const [kind,setKind]=useState('Todos');
+ const [loading,setLoading]=useState(true);
+ const [notice,setNotice]=useState('');
+ const [error,setError]=useState('');
+ const [install,setInstall]=useState<InstallEvent|null>(null);
+ const [showInstall,setShowInstall]=useState(false);
+ const [menuOpen,setMenuOpen]=useState(false);
+ const [lastLoaded,setLastLoaded]=useState<Date|null>(null);
+ const editorial=isEditor(user?.app_metadata?.radar_role as string|undefined);
+ const sourceMap=useMemo(()=>Object.fromEntries(sources.map(s=>[s.id,s.name])),[sources]);
+ const filtered=useMemo(()=>{
+   const query=search.trim().toLocaleLowerCase('pt-BR');
+   return articles.filter(a=>(kind==='Todos'||a.kind===kind)&&(!query||(a.title+' '+a.excerpt+' '+(sourceMap[a.source_id]||'')).toLocaleLowerCase('pt-BR').includes(query)));
+ },[articles,kind,search,sourceMap]);
+ const latest=articles[0]||null;
+ const unread=user?announcements.filter(a=>!reads.includes(a.id)).length:0;
 
-  async function refresh(silent=false){
-    if(!db){setLoading(false);return}
-    if(!silent)setLoading(true);
-    const [a,s,n]=await Promise.all([
-      db.from('articles').select('id,title,url,excerpt,published_at,discovered_at,kind,topic,relevance_score,source_id,image_url,editorial_note,status').eq('status','published').order('discovered_at',{ascending:false}).limit(150),
-      db.from('sources').select('id,slug,name,homepage').eq('active',true),
-      db.from('announcements').select('id,title,body,kind,audience,status,published_at,created_at').eq('status','published').order('created_at',{ascending:false}).limit(60)
-    ]);
-    if(a.error||s.error||n.error){setInfo('Falha ao consultar o serviço. Tente atualizar a página.')}
-    setArticles((a.data||[]) as Article[]);
-    setSources((s.data||[]) as Source[]);
-    setAnnouncements((n.data||[]) as Announcement[]);
-    if(!silent)setLoading(false);
-  }
-  useEffect(()=>{
-    void refresh();
-    if(db){
-      void db.auth.getUser().then(({data})=>setUser(data.user??null));
-      const {data:{subscription}}=db.auth.onAuthStateChange((_event,session)=>setUser(session?.user??null));
-      return ()=>subscription.unsubscribe();
-    }
-  },[]);
-  useEffect(()=>{
-    if(!db||!user){setBookmarks([]);setReadIds([]);return}
-    void Promise.all([
-      db.from('bookmarks').select('article_id').eq('user_id',user.id),
-      db.from('message_reads').select('announcement_id').eq('user_id',user.id),
-      db.from('profiles').select('display_name,practice_area').eq('user_id',user.id).maybeSingle(),
-      db.from('preferences').select('topics').eq('user_id',user.id).maybeSingle()
-    ]).then(([b,r,p,pr])=>{
-      setBookmarks((b.data||[]).map(x=>x.article_id));
-      setReadIds((r.data||[]).map(x=>x.announcement_id));
-      setDisplayName(p.data?.display_name||'');
-      setArea(p.data?.practice_area||'');
-      setTopics(pr.data?.topics||[]);
-    });
-  },[user?.id]);
-  useEffect(()=>{
-    if(!db||!editorial)return;
-    void Promise.all([fetchDrafts(),fetchAdminOverview()]);
-  },[user?.id,role]);
-  async function fetchDrafts(){
-    if(!db)return;
-    const {data,error}=await db.from('articles').select('id,title,url,excerpt,published_at,discovered_at,kind,topic,relevance_score,source_id,image_url,editorial_note,status').eq('status','draft').order('discovered_at',{ascending:false}).limit(60);
-    if(error)setInfo(error.message);
-    setDrafts((data||[]) as Article[]);
-  }
-  async function fetchAdminOverview(){
-    if(!db||!editorial)return;
-    const requests=[
-      db.from('editorial_events').select('id,entity_type,action,previous_status,new_status,occurred_at').order('occurred_at',{ascending:false}).limit(40),
-      role==='admin'?db.from('collector_runs').select('source_slug,status,examined,inserted,started_at,error_message').order('started_at',{ascending:false}).limit(80):Promise.resolve({data:[] as CollectorRun[],error:null})
-    ];
-    const [a,r]=await Promise.all(requests);
-    if(a.error||r.error)setInfo('Não foi possível consultar alguns indicadores administrativos.');
-    setAudit((a.data||[]) as EditorialEvent[]);
-    setRuns((r.data||[]) as CollectorRun[]);
-  }
-  useEffect(()=>{
-    if(!db)return;
-    const timer=window.setInterval(()=>{void refresh(true)},5*60*1000);
-    const onFocus=()=>{void refresh(true)};
-    window.addEventListener('focus',onFocus);
-    return ()=>{window.clearInterval(timer);window.removeEventListener('focus',onFocus)};
-  },[]);
-  useEffect(()=>{
-    const handler=(e:Event)=>{e.preventDefault();setInstall(e as InstallEvent)}
-    window.addEventListener('beforeinstallprompt',handler);
-    return ()=>window.removeEventListener('beforeinstallprompt',handler)
-  },[]);
-  const sourceMap=useMemo(()=>Object.fromEntries(sources.map(s=>[s.id,s.name])),[sources]);
-  const sourceSlugMap=useMemo(()=>Object.fromEntries(sources.map(s=>[s.slug,s.name])),[sources]);
-  const latestRuns=useMemo(()=>runs.filter((r,i,a)=>a.findIndex(x=>x.source_slug===r.source_slug)===i),[runs]);
-  const visible=useMemo(()=>{
-    const q=search.toLocaleLowerCase('pt-BR').trim();
-    return articles.filter(a=>{
-      const match=q===''||(a.title+' '+a.excerpt+' '+(sourceMap[a.source_id]||'')).toLocaleLowerCase('pt-BR').includes(q);
-      const kind=filter==='Todos'||a.kind===filter;
-      const page=(view!=='legislacao'||a.kind==='Legislação')&&(view!=='jurisprudencia'||a.kind==='Jurisprudência');
-      return match&&kind&&page;
-    });
-  },[articles,search,filter,sourceMap,view]);
-  const unread=announcements.filter(x=>!readIds.includes(x.id)&&(x.audience==='all'||user)).length;
-  function go(v:View){setView(v);window.scrollTo({top:0,behavior:'smooth'})}
-  async function login(e:React.FormEvent){e.preventDefault();if(!db)return;
-    setSending(true);setInfo('');
-    const {error}=await db.auth.signInWithOtp({email,options:{emailRedirectTo:window.location.origin+'/radar-ia-portal/'}});
-    setInfo(error?'Não foi possível enviar o link: '+error.message:'Verifique seu e-mail para acessar o Radar.');
-    setSending(false);
-  }
-  async function saveProfile(e:React.FormEvent){e.preventDefault();if(!db||!user)return;
-    const [p,q]=await Promise.all([
-      db.from('profiles').upsert({user_id:user.id,display_name:displayName,practice_area:area}),
-      db.from('preferences').upsert({user_id:user.id,topics,email_opt_in:false,updated_at:new Date().toISOString()})
-    ]);
-    setInfo(p.error?.message||q.error?.message||'Preferências salvas com sucesso.');
-  }
-  async function bookmark(id:string){if(!db||!user){go('minha-area');setInfo('Entre com seu e-mail para salvar notícias.');return}
-    if(bookmarks.includes(id)){
-      const {error}=await db.from('bookmarks').delete().eq('user_id',user.id).eq('article_id',id);
-      if(!error)setBookmarks(x=>x.filter(y=>y!==id));else setInfo(error.message);
-    }else{
-      const {error}=await db.from('bookmarks').insert({user_id:user.id,article_id:id});
-      if(!error)setBookmarks(x=>[...x,id]);else setInfo(error.message);
-    }
-  }
-  async function markRead(id:string){if(!db||!user||readIds.includes(id))return;
-    const {error}=await db.from('message_reads').insert({user_id:user.id,announcement_id:id});
-    if(!error)setReadIds(x=>[...x,id]);
-  }
-  async function review(id:string,decision:'published'|'rejected'){
-    if(!db||!user||!editorial||reviewingId)return;
-    const note=(reviewNotes[id]||'').trim().slice(0,1000);
-    if(decision==='rejected'&&note.length<10){
-      setInfo('Informe o motivo da rejeição (mínimo de 10 caracteres) para manter a rastreabilidade editorial.');
-      return;
-    }
-    setReviewingId(id);
-    try{
-      const {data,error}=await db.from('articles')
-        .update({status:decision,approved_at:decision==='published'?new Date().toISOString():null,
-          reviewed_by:user.id,editorial_note:note||null})
-        .eq('id',id).eq('status','draft').select('id').single();
-      if(error||!data){setInfo('Não foi possível registrar a revisão: '+(error?.message||'registro não atualizado'));return}
-      setInfo(decision==='published'?'Notícia publicada após revisão.':'Notícia rejeitada e retirada da fila editorial.');
-      await Promise.all([refresh(),fetchDrafts(),fetchAdminOverview()]);
-    }finally{setReviewingId(null)}
-  }
-  async function postAnnouncement(e:React.FormEvent){e.preventDefault();if(!db||!user||!editorial)return;
-    const {error}=await db.from('announcements').insert({title:adminTitle.trim(),body:adminBody.trim(),kind:adminKind,audience:adminAudience,
-      status:'published',published_at:new Date().toISOString(),created_by:user.id});
-    setInfo(error?'Falha ao publicar: '+error.message:'Informe publicado. Visível aos destinatários.');
-    if(!error){setAdminTitle('');setAdminBody('');await refresh()}
-  }
-  async function submitSuggestion(e:React.FormEvent){e.preventDefault();if(!db||!user)return;
-    const {error}=await db.from('suggestions').insert({user_id:user.id,topic:suggestionTopic,body:suggestion.trim()});
-    setInfo(error?error.message:'Sugestão registrada para avaliação da equipe.');
-    if(!error)setSuggestion('');
-  }
-  function Card({item}:{item:Article}){
-    const link=externalHttps(item.url);
-    return <article className="news-card">
-      <div className="news-art">{item.image_url?<img src={item.image_url} alt="" loading="lazy" onError={e=>{e.currentTarget.style.display='none'}}/>:null}
-        <div className="art-watermark"><Radar size={58}/></div>
-        <span className="art-type">{item.kind}</span>
-      </div>
-      <div className="news-content">
-        <div className="overline">{sourceMap[item.source_id]||'Fonte oficial'} · {safeDate(item.published_at||item.discovered_at)}</div>
-        <h3>{item.title}</h3>
-        <Summary text={item.excerpt}/>
-        {mode==='avancado'&&<div className="advanced-detail"><TrendingUp size={15}/> Relevância temática: {item.relevance_score}/100 · Verifique o conteúdo integral na fonte.</div>}
-        {item.editorial_note&&<div className="editorial-note"><Lightbulb size={16}/><span>{item.editorial_note}</span></div>}
-        <div className="card-actions"><a href={link||'#'} target="_blank" rel="noopener noreferrer" className="source-link" aria-label={'Abrir fonte oficial: '+item.title}>Ler na fonte <ExternalLink size={15}/></a>
-          <button className={bookmarks.includes(item.id)?'icon-btn saved':'icon-btn'} title="Salvar notícia" aria-label="Salvar notícia" onClick={()=>void bookmark(item.id)}><Bookmark size={19} fill={bookmarks.includes(item.id)?'currentColor':'none'}/></button>
-        </div>
-      </div>
-    </article>
-  }
-
-  return <div className="app">
-    <header className="topbar">
-      <div className="shell top-inner">
-        <button className="brand" onClick={()=>go('inicio')} aria-label="Radar: voltar ao início"><img src="/radar-ia-portal/logo.svg" width="44" height="44" alt=""/><span><strong>RADAR <em>IA & DIREITO</em></strong><small>Inteligência jurídica acessível</small></span></button>
-        <nav className="desktop-nav" aria-label="Navegação principal">{nav.slice(0,5).map(([v,label])=><button className={view===v?'nav-active':''} key={v} onClick={()=>go(v)}>{label}</button>)}</nav>
-        <div className="top-actions"><button className="header-alert" title="Informes" onClick={()=>go('informes')}><Bell size={19}/>{unread>0&&<span className="dot"/>}</button>
-          <button className="outline-btn top-login" onClick={()=>go('minha-area')}><Users size={17}/>{user?'Minha área':'Entrar'}</button></div>
-      </div>
-    </header>
-    <main>
-      {view==='inicio'&&<section className="hero"><div className="shell hero-grid"><div>
-        <span className="eyebrow"><span className="live-dot"/> OBSERVATÓRIO DE IA NA ADVOCACIA</span>
-        <h1>O Direito evolui.<br/><span>Você acompanha.</span></h1>
-        <p>Novidades jurídicas sobre inteligência artificial, com fontes oficiais e linguagem simples. Um espaço para acompanhar mudanças sem complicação.</p>
-        <div className="hero-buttons"><button className="primary-btn" onClick={()=>go('noticias')}>Explorar novidades <ChevronRight size={18}/></button>
-          <button className="ghost-btn" onClick={()=>go('informes')}>Informes da comissão <Mail size={17}/></button></div>
-        <div className="hero-trust"><ShieldCheck size={17}/> Fontes verificáveis · Acesso gratuito · Sem cadastro obrigatório</div>
-      </div><div className="hero-visual"><div className="radar-circle circle3"/><div className="radar-circle circle2"/><div className="radar-circle circle1"/><Radar size={100}/><div className="orb orb1"/><div className="orb orb2"/><span className="scan-label">RADAR ATIVO</span></div></div></section>}
-      <div className="shell layout">
-        <aside className="sidebar">
-          <div className="side-title">NAVEGAÇÃO</div>
-          {nav.map(([v,label,Icon])=><button key={v} className={'side-link '+(view===v?'active':'')} onClick={()=>go(v)}><Icon size={19}/><span>{label}</span>{v==='informes'&&unread>0&&<small className="count">{unread}</small>}</button>)}
-          {editorial&&<button className={'side-link '+(view==='admin'?'active':'')} onClick={()=>go('admin')}><Settings size={19}/>Administração</button>}
-          <div className="side-divider"/>
-          <div className="side-title">PREFERÊNCIA DE LEITURA</div>
-          <div className="mode-switch"><button className={mode==='essencial'?'selected':''} onClick={()=>setMode('essencial')}>Essencial</button><button className={mode==='avancado'?'selected':''} onClick={()=>setMode('avancado')}>Avançado</button></div>
-          <div className="side-note"><Info size={16}/>Projeto técnico experimental. Não representa publicação oficial da OAB sem autorização institucional.</div>
-        </aside>
-        <section className="content">
-          {info&&<div className="feedback" role="status"><Info size={17}/><span>{info}</span><button onClick={()=>setInfo('')} aria-label="Fechar aviso"><X size={16}/></button></div>}
-          {(['inicio','noticias','legislacao','jurisprudencia'] as View[]).includes(view)&&<>
-            <div className="section-heading"><div><span className="eyebrow soft">INFORMAÇÃO QUE IMPORTA</span><h2>{view==='legislacao'?'Legislação e projetos':view==='jurisprudencia'?'Jurisprudência e precedentes':'Últimas atualizações'}</h2><p>Publicações com origem identificada e acesso ao documento original.</p></div><button className="icon-btn" title="Atualizar notícias" onClick={()=>void refresh()}><RefreshCw size={19}/></button></div>
-            {view==='inicio'&&<div className="quick-grid">
-              <button onClick={()=>go('legislacao')}><Scale/><strong>O que mudou?</strong><span>Normas e projetos de lei</span><ChevronRight size={16}/></button>
-              <button onClick={()=>go('noticias')}><Lightbulb/><strong>Como isso me afeta?</strong><span>Novidades explicadas</span><ChevronRight size={16}/></button>
-              <button onClick={()=>go('informes')}><CalendarDays/><strong>Comissão</strong><span>Informes e atividades</span><ChevronRight size={16}/></button>
-            </div>}
-            <div className="toolbar"><div className="searchbox"><Search size={20}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Busque IA, decisões, normas, tribunais..." aria-label="Pesquisar notícias"/></div><select value={filter} onChange={e=>setFilter(e.target.value)} aria-label="Filtrar categoria"><option>Todos</option><option>Notícias</option><option>Legislação</option><option>Jurisprudência</option></select></div>
-            {loading?<div className="empty-state">Carregando publicações verificadas...</div>:visible.length?<div className="news-grid">{visible.map(a=><Card key={a.id} item={a}/>)}</div>:<div className="empty-state"><Archive size={40}/><h3>Nenhuma publicação aprovada nesta seleção</h3><p>O motor de coleta identifica novidades, mas o conteúdo só aparece após revisão editorial. Tente outro filtro.</p></div>}
-          </>}
-          {view==='informes'&&<><div className="section-heading"><div><span className="eyebrow soft">COMUNICAÇÃO INSTITUCIONAL</span><h2>Informes e comunicados</h2><p>Atualizações publicadas pela equipe autorizada.</p></div><Mail size={27}/></div>
-            {announcements.length?<div className="ann-list">{announcements.map(a=><article className="announcement" key={a.id}><div className="ann-icon"><Bell size={21}/></div><div><span className="overline">{a.kind.toUpperCase()} · {safeDate(a.published_at||a.created_at)}</span><h3>{a.title}</h3><p>{a.body}</p>{user&&<button className="small-action" onClick={()=>void markRead(a.id)}>{readIds.includes(a.id)?<><Check size={15}/> Lido</>:<><Eye size={15}/> Marcar como lido</>}</button>}</div></article>)}</div>:<div className="empty-state"><Mail size={40}/><h3>Sem informes publicados</h3><p>Os comunicados aparecerão aqui quando forem aprovados.</p></div>}
-          </>}
-          {view==='minha-area'&&<><div className="section-heading"><div><span className="eyebrow soft">PERSONALIZAÇÃO</span><h2>Meu Radar</h2><p>Salve publicações, acompanhe temas e envie sugestões.</p></div><Users size={26}/></div>
-            {!user?<div className="panel login-panel"><LogIn size={32}/><h3>Entre com seu e-mail</h3><p>Enviaremos um link de acesso. A leitura pública continua liberada sem conta.</p><form onSubmit={e=>void login(e)}><label>E-mail<input type="email" value={email} required placeholder="seu@email.com" onChange={e=>setEmail(e.target.value)}/></label><button className="primary-btn" disabled={sending||!db}>{sending?'Enviando...':'Enviar link de acesso'} <Send size={16}/></button></form></div>:<div className="profile-grid">
-              <form className="panel profile-card" onSubmit={e=>void saveProfile(e)}><h3>Meu perfil</h3><p className="muted">{user.email}</p><label>Nome<input value={displayName} onChange={e=>setDisplayName(e.target.value)} maxLength={90}/></label><label>Área de atuação<input value={area} onChange={e=>setArea(e.target.value)} maxLength={90}/></label><span className="field-label">Interesses</span><div className="tag-picker">{['Jurisprudência','Legislação','IA e ética','LGPD','Tecnologia jurídica','Capacitação'].map(t=><button type="button" key={t} className={topics.includes(t)?'tag picked':'tag'} onClick={()=>setTopics(v=>v.includes(t)?v.filter(x=>x!==t):[...v,t])}>{t}</button>)}</div><button className="primary-btn" type="submit">Salvar preferências <Check size={16}/></button><button className="logout-btn" type="button" onClick={()=>void db?.auth.signOut()}><LogOut size={16}/> Sair</button></form>
-              <div className="profile-right"><div className="panel"><h3>Biblioteca de favoritos</h3>{articles.filter(a=>bookmarks.includes(a.id)).length?articles.filter(a=>bookmarks.includes(a.id)).map(a=><div className="saved-row" key={a.id}><a href={externalHttps(a.url)} target="_blank" rel="noreferrer">{a.title}</a><button className="icon-btn" onClick={()=>void bookmark(a.id)}><X size={16}/></button></div>):<p className="muted">Salve matérias pelo ícone de marcador nas notícias.</p>}</div>
-              <form className="panel suggestion" onSubmit={e=>void submitSuggestion(e)}><h3>Sugerir assunto para a comissão</h3><select value={suggestionTopic} onChange={e=>setSuggestionTopic(e.target.value)}><option>Capacitação</option><option>Ferramenta jurídica</option><option>Dúvida sobre IA</option><option>Outro</option></select><textarea value={suggestion} onChange={e=>setSuggestion(e.target.value)} required minLength={8} maxLength={1500} placeholder="Qual tema seria útil para sua advocacia?"/><button className="outline-btn" type="submit">Enviar sugestão <Send size={16}/></button></form></div>
-            </div>}
-          </>}
-          {view==='admin'&&editorial&&<><div className="section-heading"><div><span className="eyebrow soft">ÁREA RESTRITA</span><h2>Central da comissão</h2><p>Curadoria e comunicação. Toda publicação fica registrada no banco.</p></div><ShieldCheck size={28}/></div>
-            <div className="admin-metrics"><div><Newspaper/><strong>{drafts.length}</strong><span>Aguardando revisão</span></div><div><Check/><strong>{articles.length}</strong><span>Publicadas</span></div><div><Mail/><strong>{announcements.length}</strong><span>Informes</span></div></div>
-            <div className="panel"><div className="panel-title"><h3>Fila de curadoria</h3><button className="icon-btn" onClick={()=>void fetchDrafts()} title="Atualizar fila"><RefreshCw size={18}/></button></div>{drafts.length?drafts.map(a=><div className="queue-row" key={a.id}><div><strong>{a.title}</strong><small>{sourceMap[a.source_id]||'Fonte externa'} · Relevância {a.relevance_score}/100</small><a href={externalHttps(a.url)} target="_blank" rel="noreferrer">Conferir fonte <ExternalLink size={13}/></a><textarea className="review-note" maxLength={1000} value={reviewNotes[a.id]||''} onChange={e=>setReviewNotes(v=>({...v,[a.id]:e.target.value}))} placeholder="Nota revisada: por que isto importa para o advogado? (opcional)"/></div><div className="review-actions"><button className="primary-btn compact" disabled={reviewingId!==null} onClick={()=>void review(a.id,'published')}>Aprovar</button><button className="reject-btn" disabled={reviewingId!==null} onClick={()=>void review(a.id,'rejected')}>Rejeitar</button></div></div>):<p className="muted">Sem novas matérias na fila.</p>}</div>
-            {role==='admin'&&<div className="panel"><div className="panel-title"><h3>Saúde dos robôs de coleta</h3><button className="icon-btn" title="Atualizar indicadores" onClick={()=>void fetchAdminOverview()}><RefreshCw size={18}/></button></div>
-              <p className="muted">Última execução registrada no banco por fonte. Uma coleta pode terminar sem encontrar novas matérias.</p>
-              {latestRuns.length?<div className="collector-grid">{latestRuns.map(r=><div className="collector-item" key={r.source_slug}><div className="collector-head"><strong>{sourceSlugMap[r.source_slug]||r.source_slug}</strong><span className={r.status==='success'?'health-ok':'health-error'}>{r.status==='success'?'Regular':'Falha'}</span></div><small>{new Date(r.started_at).toLocaleString('pt-BR')} · {r.examined} candidatos · {r.inserted} inseridos</small>{r.error_message&&<p className="collector-error">{r.error_message}</p>}</div>)}</div>:<p className="muted">Ainda não há execuções registradas.</p>}
-            </div>}
-            <div className="panel"><h3>Histórico editorial</h3>
-              {audit.length?<div className="audit-log">{audit.map(e=><div className="audit-entry" key={e.id}><span className="audit-bullet"><Check size={14}/></span><div><strong>{e.action==='published'?'Publicação autorizada':e.action==='rejected'?'Publicação rejeitada':'Alteração editorial'}</strong><small>{e.entity_type==='articles'?'Notícia':'Informe'} · {new Date(e.occurred_at).toLocaleString('pt-BR')}</small></div></div>)}</div>:<p className="muted">Ainda não houve alterações editoriais registradas.</p>}
-            </div>
-            <form className="panel admin-compose" onSubmit={e=>void postAnnouncement(e)}><h3>Novo informe ou comunicado</h3><label>Título<input minLength={5} maxLength={200} required value={adminTitle} onChange={e=>setAdminTitle(e.target.value)} placeholder="Título do comunicado"/></label><label>Mensagem<textarea minLength={10} maxLength={10000} required value={adminBody} onChange={e=>setAdminBody(e.target.value)} placeholder="Mensagem destinada aos usuários..."/></label><div className="form-pair"><label>Tipo<select value={adminKind} onChange={e=>setAdminKind(e.target.value)}><option value="informe">Informe</option><option value="comunicado">Comunicado</option><option value="evento">Evento</option></select></label><label>Destinatários<select value={adminAudience} onChange={e=>setAdminAudience(e.target.value)}><option value="all">Todos os visitantes</option><option value="members">Somente cadastrados</option></select></label></div><div className="admin-note"><AlertTriangle size={17}/> Publique apenas materiais autorizados pela coordenação. O envio ocorre no portal, não por e-mail ou push.</div><button className="primary-btn" type="submit">Publicar comunicado <Send size={16}/></button></form>
-          </>}
-        </section>
-      </div>
-    </main>
-    <section className="app-banner"><div className="shell app-banner-inner"><div className="app-icon"><Smartphone size={30}/></div><div><strong>Radar também no seu celular</strong><p>Adicione à tela inicial e acompanhe notícias como em um aplicativo.</p></div>{install?<button className="primary-btn" onClick={()=>void install.prompt()}>Instalar aplicativo</button>:<button className="outline-btn" onClick={()=>setIphoneGuide(!iphoneGuide)}>Como instalar <ChevronRight size={17}/></button>}</div>{iphoneGuide&&<div className="shell ios-help"><strong>iPhone (Safari):</strong> Compartilhar → Adicionar à Tela de Início → Abrir como App → Adicionar. <strong>Android:</strong> menu do Chrome → Instalar app. A instalação no iPhone requer confirmação.</div>}</section>
-    <footer><div className="shell footer-content"><div><Radar size={22}/><strong>RADAR IA & DIREITO</strong><span>Projeto experimental de tecnologia jurídica.</span></div><p>Informações informativas, não substituem consulta às fontes oficiais ou orientação profissional. O uso institucional da marca depende de autorização.</p></div></footer>
-    <nav className="mobile-nav" aria-label="Navegação móvel" style={editorial?{gridTemplateColumns:'repeat(5,1fr)'}:undefined}>{nav.filter(x=>['inicio','noticias','informes','minha-area'].includes(x[0])).map(([v,l,Icon])=><button key={v} className={view===v?'active':''} onClick={()=>go(v)}><Icon size={21}/><span>{l==='Minha área'?'Perfil':l}</span></button>)}{editorial&&<button className={view==='admin'?'active':''} onClick={()=>go('admin')}><Settings size={21}/><span>Admin</span></button>}</nav>
+ function navigate(to:View,tab?:PracticeTab){
+   setView(to);setMenuOpen(false);if(tab)setPracticeTab(tab);
+   window.scrollTo({top:0,behavior:'smooth'});
+ }
+ async function refresh(silent=false){
+   if(!db){setError('O serviço de dados está indisponível.');setLoading(false);return}
+   if(!silent)setLoading(true);
+   const [a,s,n]=await Promise.all([
+     db.from('articles').select('id,title,url,excerpt,published_at,discovered_at,kind,topic,relevance_score,source_id,image_url,editorial_note,status').eq('status','published').order('discovered_at',{ascending:false}).limit(120),
+     db.from('sources').select('id,slug,name,homepage').eq('active',true),
+     db.from('announcements').select('id,title,body,kind,audience,status,published_at,created_at').eq('status','published').order('created_at',{ascending:false}).limit(50)
+   ]);
+   if(a.error||s.error||n.error)setError('Não foi possível atualizar todos os dados agora. Acompanhe novamente em instantes.');
+   else {setError('');setArticles((a.data||[]) as Article[]);setSources((s.data||[]) as Source[]);setAnnouncements((n.data||[]) as Announcement[]);setLastLoaded(new Date())}
+   if(!silent)setLoading(false);
+ }
+ useEffect(()=>{
+   void refresh();
+   if(!db)return;
+   void db.auth.getUser().then(({data})=>setUser(data.user??null));
+   const {data:{subscription}}=db.auth.onAuthStateChange((_event,session)=>setUser(session?.user??null));
+   return ()=>subscription.unsubscribe();
+ },[]);
+ useEffect(()=>{
+   if(!db||!user){setBookmarks([]);setReads([]);return}
+   let alive=true;
+   void Promise.all([
+     db.from('bookmarks').select('article_id').eq('user_id',user.id),
+     db.from('message_reads').select('announcement_id').eq('user_id',user.id)
+   ]).then(([b,r])=>{if(alive){setBookmarks((b.data||[]).map(x=>x.article_id));setReads((r.data||[]).map(x=>x.announcement_id))}});
+   return ()=>{alive=false}
+ },[user?.id]);
+ useEffect(()=>{
+   const id=window.setInterval(()=>{void refresh(true)},5*60*1000);
+   const handler=()=>{void refresh(true)};
+   window.addEventListener('focus',handler);
+   return ()=>{window.clearInterval(id);window.removeEventListener('focus',handler)}
+ },[]);
+ useEffect(()=>{
+   const handle=(e:Event)=>{e.preventDefault();setInstall(e as InstallEvent)};
+   window.addEventListener('beforeinstallprompt',handle);
+   return ()=>window.removeEventListener('beforeinstallprompt',handle);
+ },[]);
+ async function toggleBookmark(id:string){
+   if(!user||!db){setNotice('Entre na sua conta gratuita para salvar matérias.');navigate('minha-area');return}
+   if(bookmarks.includes(id)){
+     const {error}=await db.from('bookmarks').delete().eq('user_id',user.id).eq('article_id',id);
+     if(error)setNotice('Não foi possível remover: '+error.message);
+     else setBookmarks(v=>v.filter(x=>x!==id));
+   }else{
+     const {error}=await db.from('bookmarks').insert({user_id:user.id,article_id:id});
+     if(error)setNotice('Não foi possível salvar: '+error.message);
+     else setBookmarks(v=>[...v,id]);
+   }
+ }
+ async function markRead(id:string){
+   if(!db||!user||reads.includes(id))return;
+   const {error}=await db.from('message_reads').insert({user_id:user.id,announcement_id:id});
+   if(!error)setReads(v=>[...v,id]);
+   else setNotice(error.message);
+ }
+ const newsItems=(items:Article[],showCount=4)=>items.slice(0,showCount).map((item,i)=><ArticleCard key={item.id} index={i} item={item} source={sourceMap[item.source_id]||'Fonte oficial'} favorite={bookmarks.includes(item.id)} onSave={id=>void toggleBookmark(id)} mode={mode}/>);
+ return <div className="app-shell">
+  <div className="top-rule"><div className="container top-rule-inner"><ShieldCheck size={13}/> Observatório independente em desenvolvimento · Conteúdos com link à fonte original <span>Projeto piloto</span></div></div>
+  <header className="site-header"><div className="container header-inner">
+    <button className="site-brand" aria-label="Radar IA & Direito — Início" onClick={()=>navigate('inicio')}><span className="brand-icon"><img src="/radar-ia-portal/logo.svg" width="36" height="36" alt=""/></span><span className="brand-name"><strong>RADAR<span>IA & DIREITO</span></strong><small>Inteligência para a advocacia</small></span></button>
+    <nav className="desktop-links" aria-label="Navegação principal">{navigation.map(n=><button key={n.view} onClick={()=>navigate(n.view)} className={view===n.view?'active':''}>{n.label}</button>)}</nav>
+    <div className="header-buttons">{editorial&&<button className="admin-header" onClick={()=>navigate('admin')}><ShieldCheck size={17}/> Painel</button>}<button className="account-header" onClick={()=>navigate('minha-area')}>{user?<Users size={17}/>:<LogIn size={17}/>} <span>{user?'Minha área':'Entrar'}</span></button><button aria-label="Abrir menu" className="menu-toggle" onClick={()=>setMenuOpen(o=>!o)}>{menuOpen?<X size={22}/>:<Menu size={22}/>}</button></div>
   </div>
+  {menuOpen&&<nav className="mobile-dropdown" aria-label="Menu">{navigation.map(n=><button key={n.view} onClick={()=>navigate(n.view)}>{n.label}<ChevronRight size={16}/></button>)}{editorial&&<button onClick={()=>navigate('admin')}>Administração <ChevronRight size={16}/></button>}</nav>}
+  </header>
+  {notice&&<div className="site-toast" role="status"><Info size={18}/><span>{notice}</span><button onClick={()=>setNotice('')} aria-label="Fechar aviso"><X size={16}/></button></div>}
+  <main>
+   <Suspense fallback={<div className="container content-page"><div className="calm-empty">Abrindo módulo...</div></div>}>
+    {view==='inicio'&&<>
+      <section className="hero-section"><div className="container hero-layout">
+        <div className="hero-copy"><div className="section-kicker light"><span className="eyebrow-line"/> O SEU DIREITO, MAIS INFORMADO</div>
+          <h1>Menos ruído.<br/><i>Mais clareza</i><br/>para advogar.</h1>
+          <p>Entenda o que realmente mudou no uso da inteligência artificial no Direito, consulte as fontes e aplique boas práticas no seu dia a dia. Sem precisar dominar tecnologia.</p>
+          <div className="hero-ctas"><button className="button-accent" onClick={()=>navigate('atualizacoes')}>Ver atualizações <ArrowUpRight size={18}/></button><button className="button-ghost" onClick={()=>navigate('pratica')}>Explorar ferramentas <ArrowRight size={18}/></button></div>
+          <div className="hero-note"><CheckCircle2 size={16}/> Acesso gratuito <span>·</span> Fontes identificadas <span>·</span> Leitura sem cadastro</div>
+        </div>
+        <div className="hero-feature"><div className="feature-top"><span><span className="feature-pulse"/> DESTAQUE DO RADAR</span><Radar size={19}/></div>
+          <div className="feature-body">{latest?<><div className="feature-meta">{sourceMap[latest.source_id]||'Fonte oficial'} <span>•</span> {niceDate(latest.published_at||latest.discovered_at)}</div><h2>{latest.title}</h2><p>{latest.excerpt||'Leia a publicação original para conferir o conteúdo completo.'}</p><a className="feature-link" href={externalHttps(latest.url)} target="_blank" rel="noopener noreferrer">Abrir fonte oficial <ArrowUpRight size={19}/></a></>:<><div className="feature-meta">CURADORIA EM ANDAMENTO</div><h2>Informação confiável começa pela fonte.</h2><p>As novidades aparecerão aqui após a revisão editorial. Enquanto isso, use os guias práticos gratuitos.</p><button className="feature-link" onClick={()=>navigate('pratica')}>Aprender agora <ArrowRight size={19}/></button></>}</div>
+          <div className="feature-bottom"><span>RADAR / OBSERVATÓRIO</span><span>01 — ATUALIZAÇÕES</span></div>
+        </div>
+      </div></section>
+      <div className="fact-strip"><div className="container fact-strip-inner"><span><strong>{sources.length||'—'}</strong> fontes oficiais monitoradas</span><span className="fact-sep"/><span><strong>{articles.length}</strong> publicações aprovadas</span><span className="fact-sep"/><span><ShieldCheck size={18}/> revisão antes da publicação</span></div></div>
+      <section className="container value-section"><div className="section-heading-row"><div><div className="section-kicker"><span className="eyebrow-line"/> USE NO TRABALHO</div><h2>O que você precisa <i>resolver hoje?</i></h2><p>Não é preciso entender IA para começar. Escolha uma situação comum na advocacia.</p></div></div>
+        <div className="action-grid">
+          <button className="action-card" onClick={()=>navigate('pratica','checklist')}><div className="action-icon"><FileCheck2 size={25}/></div><span className="action-number">01 / CONFERIR</span><h3>A IA escreveu. Posso confiar?</h3><p>Confira decisões, fatos e normas antes de usar o texto em um trabalho.</p><span className="card-link">Abrir checklist <ArrowRight size={17}/></span></button>
+          <button className="action-card" onClick={()=>navigate('pratica','prompt')}><div className="action-icon"><Sparkles size={25}/></div><span className="action-number">02 / PRODUZIR</span><h3>Não sei o que pedir para a IA.</h3><p>Monte instruções claras para resumir, revisar ou estruturar um texto jurídico.</p><span className="card-link">Montar prompt <ArrowRight size={17}/></span></button>
+          <button className="action-card" onClick={()=>navigate('pratica','guias')}><div className="action-icon"><ShieldCheck size={25}/></div><span className="action-number">03 / APRENDER</span><h3>Como usar IA sem expor o cliente?</h3><p>Guias curtos sobre sigilo, conferência de fontes e uso responsável.</p><span className="card-link">Ver guias rápidos <ArrowRight size={17}/></span></button>
+        </div>
+      </section>
+      <section className="container highlights-section"><div className="section-heading-row"><div><div className="section-kicker"><span className="eyebrow-line"/> ACOMPANHAMENTO JURÍDICO</div><h2>Atualizações <i>verificáveis.</i></h2><p>Sem manchetes inventadas. Cada item leva à publicação original.</p></div><button className="simple-link" onClick={()=>navigate('atualizacoes')}>Ver todas <ArrowRight size={18}/></button></div>
+        <div className="highlights-layout"><div className="editorial-feed">{loading?<div className="calm-empty">Consultando fontes...</div>:articles.length?newsItems(articles,3):<div className="calm-empty"><Newspaper size={28}/><strong>Novidades em curadoria</strong><p>Ainda não há publicações aprovadas. Acompanhe novamente ou experimente as ferramentas disponíveis.</p></div>}</div>
+          <aside className="side-brief"><div className="brief-icon"><Compass size={29}/></div><span className="section-kicker">LEITURA ORIENTADA</span><h3>Notícia não é necessariamente uma regra nova.</h3><p>Antes de aplicar uma atualização, confirme se ela trata de projeto, decisão, norma vigente ou apenas orientação.</p><button className="text-cta" onClick={()=>navigate('pratica','guias')}>Aprender a conferir <ArrowRight size={17}/></button><div className="brief-divider"/><div className="side-mini"><Clock3 size={16}/> Guia de 3 minutos</div></aside></div>
+      </section>
+      <section className="container lower-section"><div className="commission-teaser"><div><div className="section-kicker"><span className="eyebrow-line"/> COMISSÃO EM FOCO</div><h2>Informação, capacitação e <i>participação.</i></h2><p>Comunicados institucionais autorizados, oportunidades de aprendizado e espaço para sugerir assuntos que a advocacia quer conhecer.</p><button className="button-dark" onClick={()=>navigate('informes')}>Ver informes <ArrowUpRight size={17}/></button></div><div className="commission-symbol"><Scale size={66}/></div></div></section>
+    </>}
+    {view==='atualizacoes'&&<section className="container content-page">
+      <div className="page-intro"><div className="section-kicker"><span className="eyebrow-line"/> RADAR DE ATUALIZAÇÕES</div><h1>O que mudou <i>no Direito e na IA?</i></h1><p>Notícias, normas e decisões selecionadas a partir de fontes identificadas. Utilize os filtros e confira o material original antes de aplicar qualquer informação.</p></div>
+      <div className="news-toolbar"><div className="search-field"><Search size={20}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Pesquisar assunto, tribunal ou termo..." aria-label="Pesquisar"/></div><div className="reading-switch" aria-label="Nível de leitura"><button className={mode==='essencial'?'active':''} onClick={()=>setMode('essencial')}>Essencial</button><button className={mode==='avancado'?'active':''} onClick={()=>setMode('avancado')}>Avançado</button></div><button className="refresh-button" onClick={()=>void refresh()} title="Atualizar publicações"><RefreshCw size={18}/></button></div>
+      <div className="filter-row">{['Todos','Notícias','Legislação','Jurisprudência'].map(k=><button className={kind===k?'active':''} key={k} onClick={()=>setKind(k)}>{k}</button>)}<span>{filtered.length} resultado{filtered.length===1?'':'s'}</span></div>
+      {error&&<div className="error-note"><Info size={17}/>{error}</div>}
+      <div className="updates-layout"><div className="editorial-feed">{loading?<div className="calm-empty">Consultando publicações...</div>:filtered.length?newsItems(filtered,120):<div className="calm-empty"><Search size={31}/><strong>Nenhum resultado nesta seleção</strong><p>Tente outro filtro ou uma busca mais ampla. Novos conteúdos dependem da coleta e da aprovação editorial.</p></div>}</div><aside className="updates-aside"><div className="aside-block"><div className="section-kicker">FONTES MONITORADAS</div><h3>De onde vem a informação</h3><p>Acompanhamos publicações oficiais e exibimos somente as matérias aprovadas pela curadoria.</p><div className="source-list">{sources.map(s=><a key={s.id} href={externalHttps(s.homepage)} rel="noopener noreferrer" target="_blank"><span>{s.name}</span><ArrowUpRight size={15}/></a>)}</div></div><div className="aside-block tinted"><ShieldCheck size={25}/><h3>Conferir é essencial.</h3><p>Um resumo facilita a leitura, mas não substitui o exame da decisão, da norma e de sua vigência.</p><button className="text-cta" onClick={()=>navigate('pratica','checklist')}>Usar checklist <ArrowRight size={17}/></button></div></aside></div>
+      {lastLoaded&&<p className="last-sync">Última consulta do portal: {lastLoaded.toLocaleString('pt-BR')}. A coleta das fontes ocorre em outro processo.</p>}
+    </section>}
+    {view==='pratica'&&<div className="container content-page"><Practice active={practiceTab} setActive={setPracticeTab}/></div>}
+    {view==='informes'&&<section className="container content-page"><div className="page-intro"><div className="section-kicker"><span className="eyebrow-line"/> CANAL INSTITUCIONAL</div><h1>Informes da <i>comissão.</i></h1><p>Comunicados, eventos e iniciativas divulgados por membros autorizados. A publicação depende da aprovação editorial e institucional.</p></div>
+      <div className="notice-layout"><div className="notice-list">{announcements.length?announcements.map(a=><article className="notice-card" key={a.id}><div className="notice-icon"><Bell size={21}/></div><div><div className="article-meta"><span className="article-type">{a.kind}</span><span>{niceDate(a.published_at||a.created_at)}</span></div><h2>{a.title}</h2><p>{a.body}</p>{user&&<button className="read-toggle" onClick={()=>void markRead(a.id)}>{reads.includes(a.id)?<><CheckCircle2 size={16}/> Lido</>:<><CheckCircle2 size={16}/> Marcar como lido</>}</button>}</div></article>):<div className="calm-empty"><Bell size={32}/><strong>Sem informes publicados</strong><p>Este espaço receberá comunicados autorizados, eventos e oportunidades de capacitação. Os guias e ferramentas continuam disponíveis.</p><button className="button-secondary" onClick={()=>navigate('pratica')}>Explorar ferramentas <ArrowRight size={16}/></button></div>}</div><aside className="notice-aside"><FileText size={29}/><h3>Quer sugerir um tema?</h3><p>Os usuários cadastrados podem enviar sugestões de oficinas, ferramentas e capacitações diretamente à equipe.</p><button className="text-cta" onClick={()=>navigate('minha-area')}>Minha área <ArrowRight size={16}/></button></aside></div>
+    </section>}
+    {view==='minha-area'&&<div className="container content-page"><MyArea user={user} articles={articles} bookmarks={bookmarks} onToggleBookmark={id=>void toggleBookmark(id)} onNotice={setNotice}/></div>}
+    {view==='admin'&&editorial&&user&&<div className="container content-page"><AdminPanel user={user} sources={sources} onNotice={setNotice} onPublished={()=>refresh()}/></div>}
+   </Suspense>
+  </main>
+  <section className="mobile-app-band"><div className="container app-band-inner"><div className="band-icon"><Radar size={27}/></div><div className="band-copy"><strong>Radar na tela inicial do seu celular</strong><span>Abra como aplicativo, sem depender de uma loja.</span></div>{install?<button className="button-secondary" onClick={()=>void install.prompt()}>Instalar <ArrowRight size={16}/></button>:<button className="button-secondary" onClick={()=>setShowInstall(v=>!v)}>{showInstall?'Fechar':'Como instalar'} <ArrowRight size={16}/></button>}</div>{showInstall&&<div className="container install-instructions"><p><strong>Android:</strong> abra no Chrome e escolha Instalar app no menu, quando disponível.</p><p><strong>iPhone:</strong> abra no Safari, toque em Compartilhar, selecione Adicionar à Tela de Início e confirme Abrir como App. A instalação exige sua confirmação.</p></div>}</section>
+  <footer className="site-footer"><div className="container footer-layout"><div className="footer-brand"><Radar size={27}/><div><strong>RADAR IA & DIREITO</strong><p>Da informação à aplicação responsável.</p></div></div><p>Projeto técnico experimental independente. As publicações possuem fontes identificadas e não constituem orientação jurídica individual. Uso institucional do nome e da identidade da OAB depende de aprovação.</p><span>© 2026 · Tecnologia para a advocacia</span></div></footer>
+  <nav className="bottom-nav" aria-label="Navegação móvel"><button className={view==='inicio'?'active':''} onClick={()=>navigate('inicio')}><House size={20}/>Início</button><button className={view==='atualizacoes'?'active':''} onClick={()=>navigate('atualizacoes')}><Newspaper size={20}/>Radar</button><button className={view==='pratica'?'active':''} onClick={()=>navigate('pratica')}><Sparkles size={20}/>Ferramentas</button><button className={view==='informes'?'active':''} onClick={()=>navigate('informes')}><Bell size={20}/>Avisos{unread>0&&<i/>}</button><button className={view==='minha-area'?'active':''} onClick={()=>navigate('minha-area')}><Users size={20}/>Minha área</button></nav>
+ </div>;
 }

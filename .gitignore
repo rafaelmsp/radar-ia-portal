@@ -7,3 +7,5 @@ tsconfig.tsbuildinfo
 .qa-chrome*/
 .qa-mobile/
 qa-*.png
+.qa-*/
+qa-preview.mjs
