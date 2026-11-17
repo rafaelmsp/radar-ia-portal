@@ -7,6 +7,8 @@ import {db,type Article,type Source,type Announcement,briefDate,isEditor,externa
 
 type View='inicio'|'noticias'|'legislacao'|'jurisprudencia'|'informes'|'minha-area'|'admin';
 type Mode='essencial'|'avancado';
+type CollectorRun={source_slug:string;status:string;examined:number;inserted:number;started_at:string;error_message:string|null};
+type EditorialEvent={id:number;entity_type:string;action:string;previous_status:string|null;new_status:string;occurred_at:string};
 type InstallEvent=Event&{prompt:()=>Promise<void>;userChoice?:Promise<{outcome:string}>};
 const nav:[View,string,typeof Radar][]=[
   ['inicio','Início',House],['noticias','Novidades',Newspaper],
@@ -45,6 +47,8 @@ export default function App(){
   const [suggestionTopic,setSuggestionTopic]=useState('Capacitação');
   const [reviewNotes,setReviewNotes]=useState<Record<string,string>>({});
   const [reviewingId,setReviewingId]=useState<string|null>(null);
+  const [runs,setRuns]=useState<CollectorRun[]>([]);
+  const [audit,setAudit]=useState<EditorialEvent[]>([]);
   const role=user?.app_metadata?.radar_role as string|undefined;
   const editorial=isEditor(role);
 
@@ -87,13 +91,24 @@ export default function App(){
   },[user?.id]);
   useEffect(()=>{
     if(!db||!editorial)return;
-    void fetchDrafts();
+    void Promise.all([fetchDrafts(),fetchAdminOverview()]);
   },[user?.id,role]);
   async function fetchDrafts(){
     if(!db)return;
     const {data,error}=await db.from('articles').select('id,title,url,excerpt,published_at,discovered_at,kind,topic,relevance_score,source_id,image_url,editorial_note,status').eq('status','draft').order('discovered_at',{ascending:false}).limit(60);
     if(error)setInfo(error.message);
     setDrafts((data||[]) as Article[]);
+  }
+  async function fetchAdminOverview(){
+    if(!db||!editorial)return;
+    const requests=[
+      db.from('editorial_events').select('id,entity_type,action,previous_status,new_status,occurred_at').order('occurred_at',{ascending:false}).limit(40),
+      role==='admin'?db.from('collector_runs').select('source_slug,status,examined,inserted,started_at,error_message').order('started_at',{ascending:false}).limit(80):Promise.resolve({data:[] as CollectorRun[],error:null})
+    ];
+    const [a,r]=await Promise.all(requests);
+    if(a.error||r.error)setInfo('Não foi possível consultar alguns indicadores administrativos.');
+    setAudit((a.data||[]) as EditorialEvent[]);
+    setRuns((r.data||[]) as CollectorRun[]);
   }
   useEffect(()=>{
     if(!db)return;
@@ -108,6 +123,8 @@ export default function App(){
     return ()=>window.removeEventListener('beforeinstallprompt',handler)
   },[]);
   const sourceMap=useMemo(()=>Object.fromEntries(sources.map(s=>[s.id,s.name])),[sources]);
+  const sourceSlugMap=useMemo(()=>Object.fromEntries(sources.map(s=>[s.slug,s.name])),[sources]);
+  const latestRuns=useMemo(()=>runs.filter((r,i,a)=>a.findIndex(x=>x.source_slug===r.source_slug)===i),[runs]);
   const visible=useMemo(()=>{
     const q=search.toLocaleLowerCase('pt-BR').trim();
     return articles.filter(a=>{
@@ -160,7 +177,7 @@ export default function App(){
         .eq('id',id).eq('status','draft').select('id').single();
       if(error||!data){setInfo('Não foi possível registrar a revisão: '+(error?.message||'registro não atualizado'));return}
       setInfo(decision==='published'?'Notícia publicada após revisão.':'Notícia rejeitada e retirada da fila editorial.');
-      await Promise.all([refresh(),fetchDrafts()]);
+      await Promise.all([refresh(),fetchDrafts(),fetchAdminOverview()]);
     }finally{setReviewingId(null)}
   }
   async function postAnnouncement(e:React.FormEvent){e.preventDefault();if(!db||!user||!editorial)return;
@@ -247,6 +264,13 @@ export default function App(){
           {view==='admin'&&editorial&&<><div className="section-heading"><div><span className="eyebrow soft">ÁREA RESTRITA</span><h2>Central da comissão</h2><p>Curadoria e comunicação. Toda publicação fica registrada no banco.</p></div><ShieldCheck size={28}/></div>
             <div className="admin-metrics"><div><Newspaper/><strong>{drafts.length}</strong><span>Aguardando revisão</span></div><div><Check/><strong>{articles.length}</strong><span>Publicadas</span></div><div><Mail/><strong>{announcements.length}</strong><span>Informes</span></div></div>
             <div className="panel"><div className="panel-title"><h3>Fila de curadoria</h3><button className="icon-btn" onClick={()=>void fetchDrafts()} title="Atualizar fila"><RefreshCw size={18}/></button></div>{drafts.length?drafts.map(a=><div className="queue-row" key={a.id}><div><strong>{a.title}</strong><small>{sourceMap[a.source_id]||'Fonte externa'} · Relevância {a.relevance_score}/100</small><a href={externalHttps(a.url)} target="_blank" rel="noreferrer">Conferir fonte <ExternalLink size={13}/></a><textarea className="review-note" maxLength={1000} value={reviewNotes[a.id]||''} onChange={e=>setReviewNotes(v=>({...v,[a.id]:e.target.value}))} placeholder="Nota revisada: por que isto importa para o advogado? (opcional)"/></div><div className="review-actions"><button className="primary-btn compact" disabled={reviewingId!==null} onClick={()=>void review(a.id,'published')}>Aprovar</button><button className="reject-btn" disabled={reviewingId!==null} onClick={()=>void review(a.id,'rejected')}>Rejeitar</button></div></div>):<p className="muted">Sem novas matérias na fila.</p>}</div>
+            {role==='admin'&&<div className="panel"><div className="panel-title"><h3>Saúde dos robôs de coleta</h3><button className="icon-btn" title="Atualizar indicadores" onClick={()=>void fetchAdminOverview()}><RefreshCw size={18}/></button></div>
+              <p className="muted">Última execução registrada no banco por fonte. Uma coleta pode terminar sem encontrar novas matérias.</p>
+              {latestRuns.length?<div className="collector-grid">{latestRuns.map(r=><div className="collector-item" key={r.source_slug}><div className="collector-head"><strong>{sourceSlugMap[r.source_slug]||r.source_slug}</strong><span className={r.status==='success'?'health-ok':'health-error'}>{r.status==='success'?'Regular':'Falha'}</span></div><small>{new Date(r.started_at).toLocaleString('pt-BR')} · {r.examined} candidatos · {r.inserted} inseridos</small>{r.error_message&&<p className="collector-error">{r.error_message}</p>}</div>)}</div>:<p className="muted">Ainda não há execuções registradas.</p>}
+            </div>}
+            <div className="panel"><h3>Histórico editorial</h3>
+              {audit.length?<div className="audit-log">{audit.map(e=><div className="audit-entry" key={e.id}><span className="audit-bullet"><Check size={14}/></span><div><strong>{e.action==='published'?'Publicação autorizada':e.action==='rejected'?'Publicação rejeitada':'Alteração editorial'}</strong><small>{e.entity_type==='articles'?'Notícia':'Informe'} · {new Date(e.occurred_at).toLocaleString('pt-BR')}</small></div></div>)}</div>:<p className="muted">Ainda não houve alterações editoriais registradas.</p>}
+            </div>
             <form className="panel admin-compose" onSubmit={e=>void postAnnouncement(e)}><h3>Novo informe ou comunicado</h3><label>Título<input minLength={5} maxLength={200} required value={adminTitle} onChange={e=>setAdminTitle(e.target.value)} placeholder="Título do comunicado"/></label><label>Mensagem<textarea minLength={10} maxLength={10000} required value={adminBody} onChange={e=>setAdminBody(e.target.value)} placeholder="Mensagem destinada aos usuários..."/></label><div className="form-pair"><label>Tipo<select value={adminKind} onChange={e=>setAdminKind(e.target.value)}><option value="informe">Informe</option><option value="comunicado">Comunicado</option><option value="evento">Evento</option></select></label><label>Destinatários<select value={adminAudience} onChange={e=>setAdminAudience(e.target.value)}><option value="all">Todos os visitantes</option><option value="members">Somente cadastrados</option></select></label></div><div className="admin-note"><AlertTriangle size={17}/> Publique apenas materiais autorizados pela coordenação. O envio ocorre no portal, não por e-mail ou push.</div><button className="primary-btn" type="submit">Publicar comunicado <Send size={16}/></button></form>
           </>}
         </section>
