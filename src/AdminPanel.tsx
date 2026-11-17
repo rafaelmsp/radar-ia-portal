@@ -1,11 +1,12 @@
-import {useEffect,useMemo,useState,type FormEvent} from 'react';
+import {lazy,Suspense,useEffect,useMemo,useState,type FormEvent} from 'react';
 import type {User} from '@supabase/supabase-js';
 import {Activity,ArrowUpRight,Bell,Check,CheckCircle2,ClipboardList,Clock3,
- FileText,Info,RefreshCw,Send,ShieldCheck,XCircle} from 'lucide-react';
+ FileText,Info,RefreshCw,Send,ShieldCheck,XCircle,Scale} from 'lucide-react';
 import {db,type Article,type Source,externalHttps} from './lib';
 type Run={source_slug:string;status:string;examined:number;inserted:number;started_at:string;error_message:string|null};
 type EventLog={id:number;entity_type:string;action:string;occurred_at:string};
-type AdminTab='curadoria'|'comunicados'|'monitor';
+const ImpactEditor=lazy(()=>import('./ImpactEditor'));
+type AdminTab='curadoria'|'fichas'|'comunicados'|'monitor';
 export default function AdminPanel({user,sources,onNotice,onPublished}:{user:User;sources:Source[];onNotice:(msg:string)=>void;onPublished:()=>Promise<void>}){
  const [tab,setTab]=useState<AdminTab>('curadoria');
  const [drafts,setDrafts]=useState<Article[]>([]);
@@ -69,6 +70,7 @@ export default function AdminPanel({user,sources,onNotice,onPublished}:{user:Use
   </div>
   <div className="practice-nav admin-tabs">
     <button className={tab==='curadoria'?'active':''} onClick={()=>setTab('curadoria')}><ClipboardList size={17}/> Curadoria</button>
+    <button className={tab==='fichas'?'active':''} onClick={()=>setTab('fichas')}><Scale size={17}/> Fichas de impacto</button>
     <button className={tab==='comunicados'?'active':''} onClick={()=>setTab('comunicados')}><Bell size={17}/> Comunicados</button>
     <button className={tab==='monitor'?'active':''} onClick={()=>setTab('monitor')}><Activity size={17}/> Monitoramento</button>
   </div>
@@ -82,6 +84,7 @@ export default function AdminPanel({user,sources,onNotice,onPublished}:{user:Use
       <div className="review-buttons"><button className="button-secondary danger" disabled={busy!==null} onClick={()=>void review(a,'rejected')}><XCircle size={16}/> Rejeitar</button><button className="button-primary" disabled={busy!==null||!verified.includes(a.id)} onClick={()=>void review(a,'published')}><Check size={16}/> Aprovar publicação</button></div>
     </article>)}</div>:<div className="calm-empty"><CheckCircle2 size={28}/><strong>Fila editorial em dia</strong><p>Não existem publicações aguardando avaliação neste momento. A próxima coleta poderá trazer novas candidatas.</p></div>}
   </div>}
+  {tab==='fichas'&&<Suspense fallback={<div className="admin-card">Carregando editor de fichas...</div>}><ImpactEditor onNotice={onNotice} onUpdated={onPublished}/></Suspense>}
   {tab==='comunicados'&&<div className="admin-card"><div className="admin-card-title"><div><span className="section-kicker">CANAL DA COMISSÃO</span><h2>Publicar informe</h2></div><FileText size={27}/></div>
     <p className="muted-text">Os informes aparecerão no portal ou na caixa de entrada dos cadastrados. Esta função não dispara e-mails nem notificações push.</p>
     <form className="compose-form" onSubmit={e=>void publishAnnouncement(e)}>

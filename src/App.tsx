@@ -9,13 +9,16 @@ import type {PracticeTab} from './Practice';
 const Practice=lazy(()=>import('./Practice'));
 const MyArea=lazy(()=>import('./MyArea'));
 const AdminPanel=lazy(()=>import('./AdminPanel'));
+const ImpactRadar=lazy(()=>import('./ImpactRadar'));
+import type {Brief,LegislativeStatus,LegislativeEvent} from './ImpactRadar';
 
-type View='inicio'|'atualizacoes'|'pratica'|'informes'|'minha-area'|'admin';
+type View='inicio'|'impacto'|'atualizacoes'|'pratica'|'informes'|'minha-area'|'admin';
 type ReadingMode='essencial'|'avancado';
 type InstallEvent=Event&{prompt:()=>Promise<void>};
 const navigation:{view:View;label:string}[]=[
- {view:'inicio',label:'Início'},{view:'atualizacoes',label:'Atualizações'},
- {view:'pratica',label:'IA na prática'},{view:'informes',label:'Comissão'}
+ {view:'inicio',label:'Início'},{view:'impacto',label:'Meu Radar'},
+ {view:'atualizacoes',label:'Fontes e notícias'},{view:'pratica',label:'Ferramentas'},
+ {view:'informes',label:'Comissão'}
 ];
 function niceDate(s:string|null){return s?briefDate(s):'Sem data informada'}
 function getCategoryIcon(kind:string){
@@ -40,6 +43,9 @@ export default function App(){
  const [mode,setMode]=useState<ReadingMode>('essencial');
  const [practiceTab,setPracticeTab]=useState<PracticeTab>('guias');
  const [articles,setArticles]=useState<Article[]>([]);
+ const [briefs,setBriefs]=useState<Brief[]>([]);
+ const [legislative,setLegislative]=useState<LegislativeStatus|null>(null);
+ const [legislativeEvents,setLegislativeEvents]=useState<LegislativeEvent[]>([]);
  const [sources,setSources]=useState<Source[]>([]);
  const [announcements,setAnnouncements]=useState<Announcement[]>([]);
  const [bookmarks,setBookmarks]=useState<string[]>([]);
@@ -70,13 +76,16 @@ export default function App(){
  async function refresh(silent=false){
    if(!db){setError('O serviço de dados está indisponível.');setLoading(false);return}
    if(!silent)setLoading(true);
-   const [a,s,n]=await Promise.all([
+   const [a,s,n,b,l,e]=await Promise.all([
      db.from('articles').select('id,title,url,excerpt,published_at,discovered_at,kind,topic,relevance_score,source_id,image_url,editorial_note,status').eq('status','published').order('discovered_at',{ascending:false}).limit(120),
      db.from('sources').select('id,slug,name,homepage').eq('active',true),
-     db.from('announcements').select('id,title,body,kind,audience,status,published_at,created_at').eq('status','published').order('created_at',{ascending:false}).limit(50)
+     db.from('announcements').select('id,title,body,kind,audience,status,published_at,created_at').eq('status','published').order('created_at',{ascending:false}).limit(50),
+     db.from('impact_briefs').select('*').eq('is_published',true).order('checked_on',{ascending:false}).limit(80),
+     db.from('legislative_status').select('id,title,stage,last_action,action_at_local,last_checked_at,source_url').eq('id','pl-2338-2023').maybeSingle(),
+     db.from('legislative_events').select('id,monitor_id,action,stage,detected_at,action_at_local').eq('monitor_id','pl-2338-2023').order('detected_at',{ascending:false}).limit(20)
    ]);
-   if(a.error||s.error||n.error)setError('Não foi possível atualizar todos os dados agora. Acompanhe novamente em instantes.');
-   else {setError('');setArticles((a.data||[]) as Article[]);setSources((s.data||[]) as Source[]);setAnnouncements((n.data||[]) as Announcement[]);setLastLoaded(new Date())}
+   if(a.error||s.error||n.error||b.error||l.error||e.error)setError('Não foi possível atualizar todos os dados agora. Acompanhe novamente em instantes.');
+   else {setError('');setArticles((a.data||[]) as Article[]);setSources((s.data||[]) as Source[]);setAnnouncements((n.data||[]) as Announcement[]);setBriefs((b.data||[]) as Brief[]);setLegislative((l.data||null) as LegislativeStatus|null);setLegislativeEvents((e.data||[]) as LegislativeEvent[]);setLastLoaded(new Date())}
    if(!silent)setLoading(false);
  }
  useEffect(()=>{
@@ -140,23 +149,20 @@ export default function App(){
     {view==='inicio'&&<>
       <section className="hero-section"><div className="container hero-layout">
         <div className="hero-copy"><div className="section-kicker light"><span className="eyebrow-line"/> O SEU DIREITO, MAIS INFORMADO</div>
-          <h1>Menos ruído.<br/><i>Mais clareza</i><br/>para advogar.</h1>
-          <p>Entenda o que realmente mudou no uso da inteligência artificial no Direito, consulte as fontes e aplique boas práticas no seu dia a dia. Sem precisar dominar tecnologia.</p>
-          <div className="hero-ctas"><button className="button-accent" onClick={()=>navigate('atualizacoes')}>Ver atualizações <ArrowUpRight size={18}/></button><button className="button-ghost" onClick={()=>navigate('pratica')}>Explorar ferramentas <ArrowRight size={18}/></button></div>
-          <div className="hero-note"><CheckCircle2 size={16}/> Acesso gratuito <span>·</span> Fontes identificadas <span>·</span> Leitura sem cadastro</div>
+          <h1>O que mudou?<br/><i>O que importa?</i><br/>O que conferir?</h1>
+          <p>Acompanhe decisões, normas e projetos que merecem atenção na sua advocacia. Selecione temas, entenda a situação e saiba onde conferir, sem perder tempo com notícias soltas.</p>
+          <div className="hero-ctas"><button className="button-accent" onClick={()=>navigate('impacto')}>Montar meu Radar <ArrowUpRight size={18}/></button><button className="button-ghost" onClick={()=>navigate('atualizacoes')}>Ver fontes oficiais <ArrowRight size={18}/></button></div>
+          <div className="hero-note"><CheckCircle2 size={16}/> Sem cadastro para acompanhar <span>·</span> Fontes oficiais <span>·</span> Situação identificada</div>
         </div>
         <div className="hero-feature"><div className="feature-top"><span><span className="feature-pulse"/> DESTAQUE DO RADAR</span><Radar size={19}/></div>
           <div className="feature-body">{latest?<><div className="feature-meta">{sourceMap[latest.source_id]||'Fonte oficial'} <span>•</span> {niceDate(latest.published_at||latest.discovered_at)}</div><h2>{latest.title}</h2><p>{latest.excerpt||'Leia a publicação original para conferir o conteúdo completo.'}</p><a className="feature-link" href={externalHttps(latest.url)} target="_blank" rel="noopener noreferrer">Abrir fonte oficial <ArrowUpRight size={19}/></a></>:<><div className="feature-meta">CURADORIA EM ANDAMENTO</div><h2>Informação confiável começa pela fonte.</h2><p>As novidades aparecerão aqui após a revisão editorial. Enquanto isso, use os guias práticos gratuitos.</p><button className="feature-link" onClick={()=>navigate('pratica')}>Aprender agora <ArrowRight size={19}/></button></>}</div>
           <div className="feature-bottom"><span>RADAR / OBSERVATÓRIO</span><span>01 — ATUALIZAÇÕES</span></div>
         </div>
       </div></section>
-      <div className="fact-strip"><div className="container fact-strip-inner"><span><strong>{sources.length||'—'}</strong> fontes oficiais monitoradas</span><span className="fact-sep"/><span><strong>{articles.length}</strong> publicações aprovadas</span><span className="fact-sep"/><span><ShieldCheck size={18}/> revisão antes da publicação</span></div></div>
-      <section className="container value-section"><div className="section-heading-row"><div><div className="section-kicker"><span className="eyebrow-line"/> USE NO TRABALHO</div><h2>O que você precisa <i>resolver hoje?</i></h2><p>Não é preciso entender IA para começar. Escolha uma situação comum na advocacia.</p></div></div>
-        <div className="action-grid">
-          <button className="action-card" onClick={()=>navigate('pratica','checklist')}><div className="action-icon"><FileCheck2 size={25}/></div><span className="action-number">01 / CONFERIR</span><h3>A IA escreveu. Posso confiar?</h3><p>Confira decisões, fatos e normas antes de usar o texto em um trabalho.</p><span className="card-link">Abrir checklist <ArrowRight size={17}/></span></button>
-          <button className="action-card" onClick={()=>navigate('pratica','prompt')}><div className="action-icon"><Sparkles size={25}/></div><span className="action-number">02 / PRODUZIR</span><h3>Não sei o que pedir para a IA.</h3><p>Monte instruções claras para resumir, revisar ou estruturar um texto jurídico.</p><span className="card-link">Montar prompt <ArrowRight size={17}/></span></button>
-          <button className="action-card" onClick={()=>navigate('pratica','guias')}><div className="action-icon"><ShieldCheck size={25}/></div><span className="action-number">03 / APRENDER</span><h3>Como usar IA sem expor o cliente?</h3><p>Guias curtos sobre sigilo, conferência de fontes e uso responsável.</p><span className="card-link">Ver guias rápidos <ArrowRight size={17}/></span></button>
-        </div>
+      <div className="fact-strip"><div className="container fact-strip-inner"><span><strong>{sources.length||'—'}</strong> fontes oficiais monitoradas</span><span className="fact-sep"/><span><strong>{briefs.length}</strong> fichas práticas verificadas</span><span className="fact-sep"/><span><ShieldCheck size={18}/> revisão antes da publicação</span></div></div>
+      <section className="container value-section"><div className="section-heading-row"><div><div className="section-kicker"><span className="eyebrow-line"/> IMPACTO NA ADVOCACIA</div><h2>Esses assuntos merecem <i>sua atenção.</i></h2><p>Veja o fato, a situação e o próximo passo de conferência. Sem tratar projeto como lei ou orientação como obrigação.</p></div><button className="simple-link" onClick={()=>navigate('impacto')}>Personalizar meu radar <ArrowRight size={18}/></button></div>
+        <div className="home-impact-grid">{briefs.slice(0,3).map((b,i)=><button className="home-impact-card" key={b.slug} onClick={()=>navigate('impacto')}><div className="home-impact-meta"><span>{String(i+1).padStart(2,'0')} / {b.kind==='projeto'?'PROJETO DE LEI':b.kind==='decisao'?'DECISÃO':b.kind==='norma'?'NORMA':'ORIENTAÇÃO'}</span><ArrowUpRight size={17}/></div><h3>{b.title}</h3><p>{b.why_it_matters}</p><span className="home-impact-stage">{b.stage}</span><span className="card-link">Ver o que conferir <ArrowRight size={17}/></span></button>)}{!loading&&briefs.length===0&&<div className="calm-empty">As fichas estão sendo revisadas. Consulte as fontes oficiais na seção Atualizações.</div>}</div>
+        <div className="home-tool-strip"><div><FileCheck2 size={24}/><span><strong>Vai usar uma resposta de IA em uma peça?</strong><small>Confira seis pontos antes de confiar em um texto gerado automaticamente.</small></span></div><button className="button-secondary" onClick={()=>navigate('pratica','checklist')}>Abrir checklist <ArrowRight size={17}/></button></div>
       </section>
       <section className="container highlights-section"><div className="section-heading-row"><div><div className="section-kicker"><span className="eyebrow-line"/> ACOMPANHAMENTO JURÍDICO</div><h2>Atualizações <i>verificáveis.</i></h2><p>Sem manchetes inventadas. Cada item leva à publicação original.</p></div><button className="simple-link" onClick={()=>navigate('atualizacoes')}>Ver todas <ArrowRight size={18}/></button></div>
         <div className="highlights-layout"><div className="editorial-feed">{loading?<div className="calm-empty">Consultando fontes...</div>:articles.length?newsItems(articles,3):<div className="calm-empty"><Newspaper size={28}/><strong>Novidades em curadoria</strong><p>Ainda não há publicações aprovadas. Acompanhe novamente ou experimente as ferramentas disponíveis.</p></div>}</div>
@@ -164,6 +170,7 @@ export default function App(){
       </section>
       <section className="container lower-section"><div className="commission-teaser"><div><div className="section-kicker"><span className="eyebrow-line"/> COMISSÃO EM FOCO</div><h2>Informação, capacitação e <i>participação.</i></h2><p>Comunicados institucionais autorizados, oportunidades de aprendizado e espaço para sugerir assuntos que a advocacia quer conhecer.</p><button className="button-dark" onClick={()=>navigate('informes')}>Ver informes <ArrowUpRight size={17}/></button></div><div className="commission-symbol"><Scale size={66}/></div></div></section>
     </>}
+    {view==='impacto'&&<section className="container content-page"><ImpactRadar briefs={briefs} loading={loading} onNotice={setNotice} legislative={legislative} events={legislativeEvents}/></section>}
     {view==='atualizacoes'&&<section className="container content-page">
       <div className="page-intro"><div className="section-kicker"><span className="eyebrow-line"/> RADAR DE ATUALIZAÇÕES</div><h1>O que mudou <i>no Direito e na IA?</i></h1><p>Notícias, normas e decisões selecionadas a partir de fontes identificadas. Utilize os filtros e confira o material original antes de aplicar qualquer informação.</p></div>
       <div className="news-toolbar"><div className="search-field"><Search size={20}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Pesquisar assunto, tribunal ou termo..." aria-label="Pesquisar"/></div><div className="reading-switch" aria-label="Nível de leitura"><button className={mode==='essencial'?'active':''} onClick={()=>setMode('essencial')}>Essencial</button><button className={mode==='avancado'?'active':''} onClick={()=>setMode('avancado')}>Avançado</button></div><button className="refresh-button" onClick={()=>void refresh()} title="Atualizar publicações"><RefreshCw size={18}/></button></div>
@@ -182,6 +189,6 @@ export default function App(){
   </main>
   <section className="mobile-app-band"><div className="container app-band-inner"><div className="band-icon"><Radar size={27}/></div><div className="band-copy"><strong>Radar na tela inicial do seu celular</strong><span>Abra como aplicativo, sem depender de uma loja.</span></div>{install?<button className="button-secondary" onClick={()=>void install.prompt()}>Instalar <ArrowRight size={16}/></button>:<button className="button-secondary" onClick={()=>setShowInstall(v=>!v)}>{showInstall?'Fechar':'Como instalar'} <ArrowRight size={16}/></button>}</div>{showInstall&&<div className="container install-instructions"><p><strong>Android:</strong> abra no Chrome e escolha Instalar app no menu, quando disponível.</p><p><strong>iPhone:</strong> abra no Safari, toque em Compartilhar, selecione Adicionar à Tela de Início e confirme Abrir como App. A instalação exige sua confirmação.</p></div>}</section>
   <footer className="site-footer"><div className="container footer-layout"><div className="footer-brand"><Radar size={27}/><div><strong>RADAR IA & DIREITO</strong><p>Da informação à aplicação responsável.</p></div></div><p>Projeto técnico experimental independente. As publicações possuem fontes identificadas e não constituem orientação jurídica individual. Uso institucional do nome e da identidade da OAB depende de aprovação.</p><span>© 2026 · Tecnologia para a advocacia</span></div></footer>
-  <nav className="bottom-nav" aria-label="Navegação móvel"><button className={view==='inicio'?'active':''} onClick={()=>navigate('inicio')}><House size={20}/>Início</button><button className={view==='atualizacoes'?'active':''} onClick={()=>navigate('atualizacoes')}><Newspaper size={20}/>Radar</button><button className={view==='pratica'?'active':''} onClick={()=>navigate('pratica')}><Sparkles size={20}/>Ferramentas</button><button className={view==='informes'?'active':''} onClick={()=>navigate('informes')}><Bell size={20}/>Avisos{unread>0&&<i/>}</button><button className={view==='minha-area'?'active':''} onClick={()=>navigate('minha-area')}><Users size={20}/>Minha área</button></nav>
+  <nav className="bottom-nav" aria-label="Navegação móvel"><button className={view==='inicio'?'active':''} onClick={()=>navigate('inicio')}><House size={20}/>Início</button><button className={view==='impacto'?'active':''} onClick={()=>navigate('impacto')}><Scale size={20}/>Meu Radar</button><button className={view==='atualizacoes'?'active':''} onClick={()=>navigate('atualizacoes')}><Newspaper size={20}/>Fontes</button><button className={view==='pratica'?'active':''} onClick={()=>navigate('pratica')}><Sparkles size={20}/>Ferramentas</button><button className={view==='informes'?'active':''} onClick={()=>navigate('informes')}><Bell size={20}/>Avisos{unread>0&&<i/>}</button></nav>
  </div>;
 }

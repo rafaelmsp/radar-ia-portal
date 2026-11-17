@@ -1,5 +1,11 @@
 # Radar IA & Direito — Portal e PWA
 
+## V1.3 — Meu Radar
+
+O produto agora prioriza o acompanhamento de assuntos jurídicos: o advogado escolhe temas, recebe fichas verificadas com contexto e passos de conferência, salva leituras e gera um resumo com fontes. A primeira rotina de acompanhamento automático consulta a situação do PL 2338/2023 na API oficial da Câmara, via GitHub Actions e OIDC, registrando alterações no Supabase. Não há promessa de notificação push ou de acompanhamento processual.
+
+Documento do produto e limites: docs/PRODUTO_COM_SENTIDO_V1_3.md
+
 **Observatório jurídico experimental**, com fontes identificadas e ferramentas práticas para advogados com pouca familiaridade com IA.
 
 **Acesse:** https://rafaelmsp.github.io/radar-ia-portal/
