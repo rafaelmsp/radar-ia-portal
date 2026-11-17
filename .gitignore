@@ -4,3 +4,6 @@ dist/
 .env.development.local
 *.log
 tsconfig.tsbuildinfo
+.qa-chrome*/
+.qa-mobile/
+qa-*.png

@@ -43,12 +43,13 @@ export default function App(){
   const [adminAudience,setAdminAudience]=useState('all');
   const [suggestion,setSuggestion]=useState('');
   const [suggestionTopic,setSuggestionTopic]=useState('Capacitação');
+  const [reviewNotes,setReviewNotes]=useState<Record<string,string>>({});
   const role=user?.app_metadata?.radar_role as string|undefined;
   const editorial=isEditor(role);
 
-  async function refresh(){
+  async function refresh(silent=false){
     if(!db){setLoading(false);return}
-    setLoading(true);
+    if(!silent)setLoading(true);
     const [a,s,n]=await Promise.all([
       db.from('articles').select('id,title,url,excerpt,published_at,discovered_at,kind,topic,relevance_score,source_id,image_url,editorial_note,status').eq('status','published').order('discovered_at',{ascending:false}).limit(150),
       db.from('sources').select('id,slug,name,homepage').eq('active',true),
@@ -58,7 +59,7 @@ export default function App(){
     setArticles((a.data||[]) as Article[]);
     setSources((s.data||[]) as Source[]);
     setAnnouncements((n.data||[]) as Announcement[]);
-    setLoading(false);
+    if(!silent)setLoading(false);
   }
   useEffect(()=>{
     void refresh();
@@ -93,6 +94,13 @@ export default function App(){
     if(error)setInfo(error.message);
     setDrafts((data||[]) as Article[]);
   }
+  useEffect(()=>{
+    if(!db)return;
+    const timer=window.setInterval(()=>{void refresh(true)},5*60*1000);
+    const onFocus=()=>{void refresh(true)};
+    window.addEventListener('focus',onFocus);
+    return ()=>{window.clearInterval(timer);window.removeEventListener('focus',onFocus)};
+  },[]);
   useEffect(()=>{
     const handler=(e:Event)=>{e.preventDefault();setInstall(e as InstallEvent)}
     window.addEventListener('beforeinstallprompt',handler);
@@ -137,7 +145,8 @@ export default function App(){
     if(!error)setReadIds(x=>[...x,id]);
   }
   async function publish(id:string){if(!db||!user||!editorial)return;
-    const {error}=await db.from('articles').update({status:'published',approved_at:new Date().toISOString(),reviewed_by:user.id}).eq('id',id);
+    const note=(reviewNotes[id]||'').trim().slice(0,1000)||null;
+    const {error}=await db.from('articles').update({status:'published',approved_at:new Date().toISOString(),reviewed_by:user.id,editorial_note:note}).eq('id',id);
     setInfo(error?'Falha na aprovação: '+error.message:'Notícia publicada.');
     if(!error){await Promise.all([refresh(),fetchDrafts()])}
   }
@@ -224,7 +233,7 @@ export default function App(){
           </>}
           {view==='admin'&&editorial&&<><div className="section-heading"><div><span className="eyebrow soft">ÁREA RESTRITA</span><h2>Central da comissão</h2><p>Curadoria e comunicação. Toda publicação fica registrada no banco.</p></div><ShieldCheck size={28}/></div>
             <div className="admin-metrics"><div><Newspaper/><strong>{drafts.length}</strong><span>Aguardando revisão</span></div><div><Check/><strong>{articles.length}</strong><span>Publicadas</span></div><div><Mail/><strong>{announcements.length}</strong><span>Informes</span></div></div>
-            <div className="panel"><div className="panel-title"><h3>Fila de curadoria</h3><button className="icon-btn" onClick={()=>void fetchDrafts()} title="Atualizar fila"><RefreshCw size={18}/></button></div>{drafts.length?drafts.map(a=><div className="queue-row" key={a.id}><div><strong>{a.title}</strong><small>{sourceMap[a.source_id]||'Fonte externa'} · Relevância {a.relevance_score}/100</small><a href={externalHttps(a.url)} target="_blank" rel="noreferrer">Conferir fonte <ExternalLink size={13}/></a></div><button className="primary-btn compact" onClick={()=>void publish(a.id)}>Aprovar</button></div>):<p className="muted">Sem novas matérias na fila.</p>}</div>
+            <div className="panel"><div className="panel-title"><h3>Fila de curadoria</h3><button className="icon-btn" onClick={()=>void fetchDrafts()} title="Atualizar fila"><RefreshCw size={18}/></button></div>{drafts.length?drafts.map(a=><div className="queue-row" key={a.id}><div><strong>{a.title}</strong><small>{sourceMap[a.source_id]||'Fonte externa'} · Relevância {a.relevance_score}/100</small><a href={externalHttps(a.url)} target="_blank" rel="noreferrer">Conferir fonte <ExternalLink size={13}/></a><textarea className="review-note" maxLength={1000} value={reviewNotes[a.id]||''} onChange={e=>setReviewNotes(v=>({...v,[a.id]:e.target.value}))} placeholder="Nota revisada: por que isto importa para o advogado? (opcional)"/></div><button className="primary-btn compact" onClick={()=>void publish(a.id)}>Aprovar</button></div>):<p className="muted">Sem novas matérias na fila.</p>}</div>
             <form className="panel admin-compose" onSubmit={e=>void postAnnouncement(e)}><h3>Novo informe ou comunicado</h3><label>Título<input minLength={5} maxLength={200} required value={adminTitle} onChange={e=>setAdminTitle(e.target.value)} placeholder="Título do comunicado"/></label><label>Mensagem<textarea minLength={10} maxLength={10000} required value={adminBody} onChange={e=>setAdminBody(e.target.value)} placeholder="Mensagem destinada aos usuários..."/></label><div className="form-pair"><label>Tipo<select value={adminKind} onChange={e=>setAdminKind(e.target.value)}><option value="informe">Informe</option><option value="comunicado">Comunicado</option><option value="evento">Evento</option></select></label><label>Destinatários<select value={adminAudience} onChange={e=>setAdminAudience(e.target.value)}><option value="all">Todos os visitantes</option><option value="members">Somente cadastrados</option></select></label></div><div className="admin-note"><AlertTriangle size={17}/> Publique apenas materiais autorizados pela coordenação. O envio ocorre no portal, não por e-mail ou push.</div><button className="primary-btn" type="submit">Publicar comunicado <Send size={16}/></button></form>
           </>}
         </section>
