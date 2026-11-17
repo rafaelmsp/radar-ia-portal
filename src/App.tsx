@@ -44,6 +44,7 @@ export default function App(){
   const [suggestion,setSuggestion]=useState('');
   const [suggestionTopic,setSuggestionTopic]=useState('Capacitação');
   const [reviewNotes,setReviewNotes]=useState<Record<string,string>>({});
+  const [reviewingId,setReviewingId]=useState<string|null>(null);
   const role=user?.app_metadata?.radar_role as string|undefined;
   const editorial=isEditor(role);
 
@@ -144,11 +145,23 @@ export default function App(){
     const {error}=await db.from('message_reads').insert({user_id:user.id,announcement_id:id});
     if(!error)setReadIds(x=>[...x,id]);
   }
-  async function publish(id:string){if(!db||!user||!editorial)return;
-    const note=(reviewNotes[id]||'').trim().slice(0,1000)||null;
-    const {error}=await db.from('articles').update({status:'published',approved_at:new Date().toISOString(),reviewed_by:user.id,editorial_note:note}).eq('id',id);
-    setInfo(error?'Falha na aprovação: '+error.message:'Notícia publicada.');
-    if(!error){await Promise.all([refresh(),fetchDrafts()])}
+  async function review(id:string,decision:'published'|'rejected'){
+    if(!db||!user||!editorial||reviewingId)return;
+    const note=(reviewNotes[id]||'').trim().slice(0,1000);
+    if(decision==='rejected'&&note.length<10){
+      setInfo('Informe o motivo da rejeição (mínimo de 10 caracteres) para manter a rastreabilidade editorial.');
+      return;
+    }
+    setReviewingId(id);
+    try{
+      const {data,error}=await db.from('articles')
+        .update({status:decision,approved_at:decision==='published'?new Date().toISOString():null,
+          reviewed_by:user.id,editorial_note:note||null})
+        .eq('id',id).eq('status','draft').select('id').single();
+      if(error||!data){setInfo('Não foi possível registrar a revisão: '+(error?.message||'registro não atualizado'));return}
+      setInfo(decision==='published'?'Notícia publicada após revisão.':'Notícia rejeitada e retirada da fila editorial.');
+      await Promise.all([refresh(),fetchDrafts()]);
+    }finally{setReviewingId(null)}
   }
   async function postAnnouncement(e:React.FormEvent){e.preventDefault();if(!db||!user||!editorial)return;
     const {error}=await db.from('announcements').insert({title:adminTitle.trim(),body:adminBody.trim(),kind:adminKind,audience:adminAudience,
@@ -233,7 +246,7 @@ export default function App(){
           </>}
           {view==='admin'&&editorial&&<><div className="section-heading"><div><span className="eyebrow soft">ÁREA RESTRITA</span><h2>Central da comissão</h2><p>Curadoria e comunicação. Toda publicação fica registrada no banco.</p></div><ShieldCheck size={28}/></div>
             <div className="admin-metrics"><div><Newspaper/><strong>{drafts.length}</strong><span>Aguardando revisão</span></div><div><Check/><strong>{articles.length}</strong><span>Publicadas</span></div><div><Mail/><strong>{announcements.length}</strong><span>Informes</span></div></div>
-            <div className="panel"><div className="panel-title"><h3>Fila de curadoria</h3><button className="icon-btn" onClick={()=>void fetchDrafts()} title="Atualizar fila"><RefreshCw size={18}/></button></div>{drafts.length?drafts.map(a=><div className="queue-row" key={a.id}><div><strong>{a.title}</strong><small>{sourceMap[a.source_id]||'Fonte externa'} · Relevância {a.relevance_score}/100</small><a href={externalHttps(a.url)} target="_blank" rel="noreferrer">Conferir fonte <ExternalLink size={13}/></a><textarea className="review-note" maxLength={1000} value={reviewNotes[a.id]||''} onChange={e=>setReviewNotes(v=>({...v,[a.id]:e.target.value}))} placeholder="Nota revisada: por que isto importa para o advogado? (opcional)"/></div><button className="primary-btn compact" onClick={()=>void publish(a.id)}>Aprovar</button></div>):<p className="muted">Sem novas matérias na fila.</p>}</div>
+            <div className="panel"><div className="panel-title"><h3>Fila de curadoria</h3><button className="icon-btn" onClick={()=>void fetchDrafts()} title="Atualizar fila"><RefreshCw size={18}/></button></div>{drafts.length?drafts.map(a=><div className="queue-row" key={a.id}><div><strong>{a.title}</strong><small>{sourceMap[a.source_id]||'Fonte externa'} · Relevância {a.relevance_score}/100</small><a href={externalHttps(a.url)} target="_blank" rel="noreferrer">Conferir fonte <ExternalLink size={13}/></a><textarea className="review-note" maxLength={1000} value={reviewNotes[a.id]||''} onChange={e=>setReviewNotes(v=>({...v,[a.id]:e.target.value}))} placeholder="Nota revisada: por que isto importa para o advogado? (opcional)"/></div><div className="review-actions"><button className="primary-btn compact" disabled={reviewingId!==null} onClick={()=>void review(a.id,'published')}>Aprovar</button><button className="reject-btn" disabled={reviewingId!==null} onClick={()=>void review(a.id,'rejected')}>Rejeitar</button></div></div>):<p className="muted">Sem novas matérias na fila.</p>}</div>
             <form className="panel admin-compose" onSubmit={e=>void postAnnouncement(e)}><h3>Novo informe ou comunicado</h3><label>Título<input minLength={5} maxLength={200} required value={adminTitle} onChange={e=>setAdminTitle(e.target.value)} placeholder="Título do comunicado"/></label><label>Mensagem<textarea minLength={10} maxLength={10000} required value={adminBody} onChange={e=>setAdminBody(e.target.value)} placeholder="Mensagem destinada aos usuários..."/></label><div className="form-pair"><label>Tipo<select value={adminKind} onChange={e=>setAdminKind(e.target.value)}><option value="informe">Informe</option><option value="comunicado">Comunicado</option><option value="evento">Evento</option></select></label><label>Destinatários<select value={adminAudience} onChange={e=>setAdminAudience(e.target.value)}><option value="all">Todos os visitantes</option><option value="members">Somente cadastrados</option></select></label></div><div className="admin-note"><AlertTriangle size={17}/> Publique apenas materiais autorizados pela coordenação. O envio ocorre no portal, não por e-mail ou push.</div><button className="primary-btn" type="submit">Publicar comunicado <Send size={16}/></button></form>
           </>}
         </section>
@@ -241,6 +254,6 @@ export default function App(){
     </main>
     <section className="app-banner"><div className="shell app-banner-inner"><div className="app-icon"><Smartphone size={30}/></div><div><strong>Radar também no seu celular</strong><p>Adicione à tela inicial e acompanhe notícias como em um aplicativo.</p></div>{install?<button className="primary-btn" onClick={()=>void install.prompt()}>Instalar aplicativo</button>:<button className="outline-btn" onClick={()=>setIphoneGuide(!iphoneGuide)}>Como instalar <ChevronRight size={17}/></button>}</div>{iphoneGuide&&<div className="shell ios-help"><strong>iPhone (Safari):</strong> Compartilhar → Adicionar à Tela de Início → Abrir como App → Adicionar. <strong>Android:</strong> menu do Chrome → Instalar app. A instalação no iPhone requer confirmação.</div>}</section>
     <footer><div className="shell footer-content"><div><Radar size={22}/><strong>RADAR IA & DIREITO</strong><span>Projeto experimental de tecnologia jurídica.</span></div><p>Informações informativas, não substituem consulta às fontes oficiais ou orientação profissional. O uso institucional da marca depende de autorização.</p></div></footer>
-    <nav className="mobile-nav" aria-label="Navegação móvel">{nav.filter(x=>['inicio','noticias','informes','minha-area'].includes(x[0])).map(([v,l,Icon])=><button key={v} className={view===v?'active':''} onClick={()=>go(v)}><Icon size={21}/><span>{l==='Minha área'?'Perfil':l}</span></button>)}</nav>
+    <nav className="mobile-nav" aria-label="Navegação móvel" style={editorial?{gridTemplateColumns:'repeat(5,1fr)'}:undefined}>{nav.filter(x=>['inicio','noticias','informes','minha-area'].includes(x[0])).map(([v,l,Icon])=><button key={v} className={view===v?'active':''} onClick={()=>go(v)}><Icon size={21}/><span>{l==='Minha área'?'Perfil':l}</span></button>)}{editorial&&<button className={view==='admin'?'active':''} onClick={()=>go('admin')}><Settings size={21}/><span>Admin</span></button>}</nav>
   </div>
 }
